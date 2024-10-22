@@ -1,0 +1,9 @@
+.vscode
+__pycache__
+logs/*
+src/*
+models/*
+outputs/*
+data/*
+
+!data/put datasets here.txt
