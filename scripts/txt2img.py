@@ -17,16 +17,16 @@ from contextlib import contextmanager, nullcontext
 from ldm.util import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
-from ldm.models.diffusion.dpm_solver import DPMSolverSampler
+from ldm.models.diffusion.dpm_solver.sampler import DPMSolverSampler
 
-from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
+#from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 from transformers import AutoFeatureExtractor
 
 
 # load safety model
-safety_model_id = "CompVis/stable-diffusion-safety-checker"
-safety_feature_extractor = AutoFeatureExtractor.from_pretrained(safety_model_id)
-safety_checker = StableDiffusionSafetyChecker.from_pretrained(safety_model_id)
+# safety_model_id = "CompVis/stable-diffusion-safety-checker"
+# safety_feature_extractor = AutoFeatureExtractor.from_pretrained(safety_model_id)
+# safety_checker = StableDiffusionSafetyChecker.from_pretrained(safety_model_id)
 
 
 def chunk(it, size):
@@ -48,7 +48,8 @@ def numpy_to_pil(images):
 
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
-    pl_sd = torch.load(ckpt, map_location="cpu")
+    device = torch.device('cpu')
+    pl_sd = torch.load(ckpt, map_location=device)
     if "global_step" in pl_sd:
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
@@ -85,17 +86,16 @@ def load_replacement(x):
         return x
 
 
-def check_safety(x_image):
-    safety_checker_input = safety_feature_extractor(numpy_to_pil(x_image), return_tensors="pt")
-    x_checked_image, has_nsfw_concept = safety_checker(images=x_image, clip_input=safety_checker_input.pixel_values)
-    assert x_checked_image.shape[0] == len(has_nsfw_concept)
-    for i in range(len(has_nsfw_concept)):
-        if has_nsfw_concept[i]:
-            x_checked_image[i] = load_replacement(x_checked_image[i])
-    return x_checked_image, has_nsfw_concept
+# def check_safety(x_image):
+#     safety_checker_input = safety_feature_extractor(numpy_to_pil(x_image), return_tensors="pt")
+#     x_checked_image, has_nsfw_concept = safety_checker(images=x_image, clip_input=safety_checker_input.pixel_values)
+#     assert x_checked_image.shape[0] == len(has_nsfw_concept)
+#     for i in range(len(has_nsfw_concept)):
+#         if has_nsfw_concept[i]:
+#             x_checked_image[i] = load_replacement(x_checked_image[i])
+#     return x_checked_image, has_nsfw_concept
 
-
-def main():
+def parseMyArgs(myArgs=None):
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -106,11 +106,17 @@ def main():
         help="the prompt to render"
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        default="RGB",
+        help="the mode of the PIL image to render"
+    )
+    parser.add_argument(
         "--outdir",
         type=str,
         nargs="?",
         help="dir to write results to",
-        default="outputs/txt2img-samples"
+        default="outputs"
     )
     parser.add_argument(
         "--skip_grid",
@@ -163,13 +169,13 @@ def main():
     parser.add_argument(
         "--H",
         type=int,
-        default=512,
+        default=256,
         help="image height, in pixel space",
     )
     parser.add_argument(
         "--W",
         type=int,
-        default=512,
+        default=256,
         help="image width, in pixel space",
     )
     parser.add_argument(
@@ -216,7 +222,7 @@ def main():
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="models/ldm/stable-diffusion-v1/model.ckpt",
+        default="models/ldm/stable-diffusion-v1/sd-v1-4.ckpt",
         help="path to checkpoint of model",
     )
     parser.add_argument(
@@ -232,7 +238,143 @@ def main():
         choices=["full", "autocast"],
         default="autocast"
     )
-    opt = parser.parse_args()
+    
+    opt = parser.parse_args(myArgs)
+    return opt
+
+
+def sampleLoop(opt, model, sampler):
+    print("Sampling with seed:",opt.seed)
+    seed_everything(opt.seed)
+
+    os.makedirs(opt.outdir, exist_ok=True)
+    outpath = opt.outdir
+
+    # print("Creating invisible watermark encoder (see https://github.com/ShieldMnt/invisible-watermark)...")
+    # wm = "StableDiffusionV1"
+    # wm_encoder = WatermarkEncoder()
+    # wm_encoder.set_watermark('bytes', wm.encode('utf-8'))
+
+
+
+    batch_size = opt.n_samples
+    n_rows = opt.n_rows if opt.n_rows > 0 else batch_size
+    if not opt.from_file:
+        prompt = opt.prompt
+        assert prompt is not None
+        data = [batch_size * [prompt]]
+
+    else:
+        print(f"reading prompts from {opt.from_file}")
+        with open(opt.from_file, "r") as f:
+            data = f.read().splitlines()
+            data = list(chunk(data, batch_size))
+
+    sample_path = os.path.join(outpath, "txt2img-images", time.strftime("%Y-%m-%d %H-%M-%S"))
+    grid_path = os.path.join(outpath, "txt2img-grids", time.strftime("%Y-%m-%d %H-%M-%S"))
+    os.makedirs(sample_path, exist_ok=True)
+    os.makedirs(grid_path, exist_ok=True)
+    base_count = len(os.listdir(sample_path))
+    grid_count = len(os.listdir(outpath)) - 1
+
+    start_code = None
+    if opt.fixed_code:
+        start_code = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=torch.device("cuda"))
+    
+    precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    with torch.no_grad():
+        with precision_scope("cuda"):
+            with model.ema_scope():
+                tic = time.time()
+                all_samples = list()
+                for n in trange(opt.n_iter, desc="Sampling"):
+                    for prompts in tqdm(data, desc="data"):
+                        uc = None
+                        if opt.scale != 1.0:
+                            uc = model.get_learned_conditioning(batch_size * [""])
+                        if isinstance(prompts, tuple):
+                            prompts = list(prompts)
+                        c = model.get_learned_conditioning(prompts)
+                        shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+                        samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
+                                                         conditioning=c,
+                                                         batch_size=opt.n_samples,
+                                                         shape=shape,
+                                                         verbose=False,
+                                                         unconditional_guidance_scale=opt.scale,
+                                                         unconditional_conditioning=uc,
+                                                         eta=opt.ddim_eta,
+                                                         x_T=start_code)
+
+                        x_samples_ddim = model.decode_first_stage(samples_ddim)
+                        x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                        x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
+
+                        # x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim)
+
+                        x_checked_image_torch = torch.from_numpy(x_samples_ddim).permute(0, 3, 1, 2)
+
+                        if not opt.skip_save:
+                            for x_sample in x_checked_image_torch:
+                                x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
+                                img = Image.fromarray(x_sample.astype(np.uint8), opt.mode)
+                                # img = put_watermark(img, wm_encoder)
+                                img.save(os.path.join(sample_path, f"{base_count:05}.png"))
+                                base_count += 1
+
+                        if not opt.skip_grid:
+                            all_samples.append(x_checked_image_torch)
+
+                if not opt.skip_grid:
+                    # additionally, save as grid
+                    grid = torch.stack(all_samples, 0)
+                    grid = rearrange(grid, 'n b c h w -> (n b) c h w')
+                    grid = make_grid(grid, nrow=n_rows)
+
+                    # to image
+                    grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
+                    img = Image.fromarray(grid.astype(np.uint8))
+                    # img = put_watermark(img, wm_encoder)
+                    img.save(os.path.join(grid_path, f'grid-{grid_count:04}.png'))
+                    grid_count += 1
+
+                toc = time.time()
+
+    print(f"Your samples are ready and waiting for you here: \n{outpath} \n"
+          f" \nEnjoy.")
+    return sample_path, grid_path
+
+
+def load_model_and_sampler(opt):
+    if opt.laion400m:
+        print("Falling back to LAION 400M model...")
+        opt.config = "configs/latent-diffusion/txt2img-1p4B-eval.yaml"
+        opt.ckpt = "models/ldm/text2img-large/model.ckpt"
+        opt.outdir = "outputs/txt2img-samples-laion400m"
+
+
+    config = OmegaConf.load(f"{opt.config}")
+    model = load_model_from_config(config, f"{opt.ckpt}")
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    model = model.to(device)
+
+    print()
+    print("Model Loaded")
+    print()
+
+    if opt.dpm_solver:
+        sampler = DPMSolverSampler(model)
+    elif opt.plms:
+        sampler = PLMSSampler(model)
+    else:
+        sampler = DDIMSampler(model)
+
+    return model, sampler
+
+
+def main(opt, model=None):
+    print("Sampling with seed:",opt.seed)
 
     if opt.laion400m:
         print("Falling back to LAION 400M model...")
@@ -243,7 +385,8 @@ def main():
     seed_everything(opt.seed)
 
     config = OmegaConf.load(f"{opt.config}")
-    model = load_model_from_config(config, f"{opt.ckpt}")
+    if model == None:
+        model = load_model_from_config(config, f"{opt.ckpt}")
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model = model.to(device)
@@ -274,10 +417,16 @@ def main():
         print(f"reading prompts from {opt.from_file}")
         with open(opt.from_file, "r") as f:
             data = f.read().splitlines()
-            data = list(chunk(data, batch_size))
+            newData = []
+            for prompt in data:
+                newData.append([batch_size * [prompt]][0])
+            data = newData
+            # data = list(chunk(data, batch_size))
 
-    sample_path = os.path.join(outpath, "samples")
+    sample_path = os.path.join(outpath, "txt2img-images", time.strftime("%Y-%m-%d %H-%M-%S"))
+    grid_path = os.path.join(outpath, "txt2img-grids", time.strftime("%Y-%m-%d %H-%M-%S"))
     os.makedirs(sample_path, exist_ok=True)
+    os.makedirs(grid_path, exist_ok=True)
     base_count = len(os.listdir(sample_path))
     grid_count = len(os.listdir(outpath)) - 1
 
@@ -314,15 +463,15 @@ def main():
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                         x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
 
-                        x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim)
+                        # x_checked_image, has_nsfw_concept = check_safety(x_samples_ddim)
 
-                        x_checked_image_torch = torch.from_numpy(x_checked_image).permute(0, 3, 1, 2)
+                        x_checked_image_torch = torch.from_numpy(x_samples_ddim).permute(0, 3, 1, 2)
 
                         if not opt.skip_save:
                             for x_sample in x_checked_image_torch:
                                 x_sample = 255. * rearrange(x_sample.cpu().numpy(), 'c h w -> h w c')
-                                img = Image.fromarray(x_sample.astype(np.uint8))
-                                img = put_watermark(img, wm_encoder)
+                                img = Image.fromarray(x_sample.astype(np.uint8), opt.mode)
+                                # img = put_watermark(img, wm_encoder)
                                 img.save(os.path.join(sample_path, f"{base_count:05}.png"))
                                 base_count += 1
 
@@ -337,16 +486,18 @@ def main():
 
                     # to image
                     grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-                    img = Image.fromarray(grid.astype(np.uint8))
-                    img = put_watermark(img, wm_encoder)
-                    img.save(os.path.join(outpath, f'grid-{grid_count:04}.png'))
+                    img = Image.fromarray(grid.astype(np.uint8), opt.mode)
+                    # img = put_watermark(img, wm_encoder)
+                    img.save(os.path.join(grid_path, f'grid-{grid_count:04}.png'))
                     grid_count += 1
 
                 toc = time.time()
 
     print(f"Your samples are ready and waiting for you here: \n{outpath} \n"
           f" \nEnjoy.")
+    return sample_path, grid_path
 
 
 if __name__ == "__main__":
-    main()
+    opt = parseMyArgs()
+    main(opt)

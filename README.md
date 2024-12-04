@@ -47,6 +47,16 @@ And running:
 python main.py --base configs/terrain/terrain-ldm-kl-4-rgba.yaml -t --gpus 0
 ```
 
+
+## Sampling
+
+Trained models can be sampled using the appropriate script inside the ``scripts`` folder. For example, for unconditional sampling:
+```
+conda activate ldm
+python scripts/sample_diffusion.py -r models/model.ckpt 
+```
+
+
 <!-- 
 #### Reference Sampling Script
 
