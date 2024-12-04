@@ -9,14 +9,14 @@ model:
     timesteps: 1000
     first_stage_key: image
     image_size: 64
-    channels: 4
+    channels: 1
     monitor: val/loss_simple_ema
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 64
-        in_channels: 4
-        out_channels: 4
+        in_channels: 1
+        out_channels: 1
         model_channels: 224
         attention_resolutions:
         # note: this isn\t actually the resolution but
@@ -36,14 +36,14 @@ model:
     first_stage_config:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
-        embed_dim: 4
-        ckpt_path: #TODO add path to autencoder.ckpt here - make sure ddconfig parameters match
+        embed_dim: 1
+        ckpt_path: # TODO add path to heightmap encoder
         ddconfig:
           double_z: True
-          z_channels: 4
+          z_channels: 1
           resolution: 256
-          in_channels: 4
-          out_ch: 4
+          in_channels: 1
+          out_ch: 1
           ch: 128
           ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
           num_res_blocks: 2
@@ -56,22 +56,19 @@ data:
   target: main.DataModuleFromConfig
   params:
     batch_size: 4 #48
-    num_workers: 2
+    num_workers: 1
     wrap: True
     train:
-      target: ldm.data.terrain.TerrainRGBATrain
+      target: taming.data.terrain.TerrainGSTrain
       params:
         size: 256
         augment: True
     validation:
-      target: ldm.data.terrain.TerrainRGBAValidation
+      target: taming.data.terrain.TerrainGSValidation
       params:
         size: 256
         augment: True
-    test:
-      target: ldm.data.terrain.TerrainRGBATest
-      params:
-        size: 256
+
 
 lightning:
   callbacks:
@@ -79,6 +76,9 @@ lightning:
       target: main.ImageLogger
       params:
         batch_frequency: 10000
-        max_images: 4
+        max_images: 8
         increase_log_steps: False
         log_first_step: True
+
+  trainer:
+    benchmark: True

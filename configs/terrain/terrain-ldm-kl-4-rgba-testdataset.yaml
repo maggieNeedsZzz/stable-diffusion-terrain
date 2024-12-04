@@ -37,7 +37,8 @@ model:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         embed_dim: 4
-        ckpt_path: #TODO add path to autencoder.ckpt here - make sure ddconfig parameters match
+        #n_embed: 8192
+        ckpt_path: # TODO test dataset
         ddconfig:
           double_z: True
           z_channels: 4
@@ -55,21 +56,21 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4 #48
-    num_workers: 2
+    batch_size: 2 
+    num_workers: 4
     wrap: True
     train:
-      target: ldm.data.terrain.TerrainRGBATrain
+      target: ldm.data.terrain.TestRGBATrain
       params:
         size: 256
         augment: True
     validation:
-      target: ldm.data.terrain.TerrainRGBAValidation
+      target: ldm.data.terrain.TestRGBAValidation
       params:
         size: 256
         augment: True
     test:
-      target: ldm.data.terrain.TerrainRGBATest
+      target: ldm.data.terrain.TestRGBATest
       params:
         size: 256
 
@@ -78,7 +79,10 @@ lightning:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 10000
-        max_images: 4
+        batch_frequency: 20
+        max_images: 8
         increase_log_steps: False
         log_first_step: True
+
+  trainer:
+    benchmark: True

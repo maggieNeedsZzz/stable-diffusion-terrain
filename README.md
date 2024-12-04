@@ -25,7 +25,7 @@ The dataset used for training - texture and heightmap RGBA images - can be found
 
 ## Setup
 
-An example config file is shown in ``configs/terrain/terrain-segmentation-ldm-kl-5latent.yaml``. This file needs to be completed with the path to a pre-trained autoencoder checkpoint. Training also requires a [conda](https://conda.io/) environment, that can be created with: 
+An example config file is shown in ``configs/terrain/terrain-ldm-kl-4-rgba.yaml``. This file needs to be completed with the path to a pre-trained autoencoder checkpoint. Training also requires a [conda](https://conda.io/) environment, that can be created with: 
 ```
 conda env create -f environment.yaml
 ```
@@ -37,7 +37,7 @@ conda activate ldm
 ```
 And running:
 ```
-python main.py --base configs/terrain/terrain-segmentation-ldm-kl-5latent.yaml -t --gpus 0
+python main.py --base configs/terrain/terrain-ldm-kl-4-rgba.yaml -t --gpus 0
 ```
 
 <!-- 

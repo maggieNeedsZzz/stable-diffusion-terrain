@@ -1,0 +1,58 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: ldm.models.autoencoder.AutoencoderKL
+  params:
+    monitor: "val/rec_loss"
+    embed_dim: 5
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_in_channels: 4
+        disc_start: 50001
+        kl_weight: 0.000001
+        disc_weight: 0.5
+        perceptual_weight: 0
+
+    ddconfig:
+      double_z: true
+      z_channels: 5
+      resolution: 256
+      in_channels: 4
+      out_ch: 4
+      ch: 128
+      ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+      num_res_blocks: 2
+      attn_resolutions: [ ]
+      dropout: 0.0
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 2
+    wrap: True
+    train:
+      target: ldm.data.terrain.TerrainRGBATrain
+      params:
+        size: 256
+    validation:
+      target: ldm.data.terrain.TerrainRGBAValidation
+      params:
+        size: 256
+    test:
+      target: ldm.data.terrain.TerrainRGBATest
+      params:
+        size: 256
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 20000
+        max_images: 8
+        increase_log_steps: True
+
+  trainer:
+    benchmark: True
+    #accumulate_grad_batches: 2

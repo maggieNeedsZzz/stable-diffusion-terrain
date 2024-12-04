@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from taming.modules.losses.vqperceptual import *  # TODO: taming dependency yes/no?
 
+from ldm.modules.losses.lpips import LPIPS
 
 class LPIPSWithDiscriminator(nn.Module):
     def __init__(self, disc_start, logvar_init=0.0, kl_weight=1.0, pixelloss_weight=1.0,
@@ -14,7 +15,7 @@ class LPIPSWithDiscriminator(nn.Module):
         assert disc_loss in ["hinge", "vanilla"]
         self.kl_weight = kl_weight
         self.pixel_weight = pixelloss_weight
-        self.perceptual_loss = LPIPS().eval()
+        self.perceptual_loss = LPIPS().eval()   # Comment to remove perceptual loss
         self.perceptual_weight = perceptual_weight
         # output log variance
         self.logvar = nn.Parameter(torch.ones(size=()) * logvar_init)
@@ -45,19 +46,46 @@ class LPIPSWithDiscriminator(nn.Module):
     def forward(self, inputs, reconstructions, posteriors, optimizer_idx,
                 global_step, last_layer=None, cond=None, split="train",
                 weights=None):
+        
+        #l1 loss
         rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
+        
+        #weighted alpha channel
+        # alpha_loss = torch.abs(inputs.contiguous()[:,[3],:,:] - reconstructions.contiguous()[:,[3],:,:])
+        # rgb_loss = torch.abs(inputs.contiguous()[:,:3,:,:] - reconstructions.contiguous()[:,:3,:,:])
+        # weighted_rgb_loss = 0.5 * rgb_loss
+        # weighted_alpha_loss = 0.5 * alpha_loss
+
+        #rec_loss = weighted_rgb_loss + weighted_alpha_loss     !!! Not the same shape
+        # loss_vector = [ weighted_rgb_loss,weighted_alpha_loss]
+        # rec_loss = torch.cat(loss_vector, dim=1)
+
+        #Only alpha channel
+        # rec_loss = alpha_loss 
+
+
         if self.perceptual_weight > 0:
             p_loss = self.perceptual_loss(inputs.contiguous(), reconstructions.contiguous())
             rec_loss = rec_loss + self.perceptual_weight * p_loss
 
+        # We assume the latent distribution is a gaussian
+        # NLL for a gaussian is log(variance) + rec/var (mostly)
+
+        # Here self.logvar is the logarithm of the variance of the likelihood (apparently) 
+        # To get the actual variance we take the exp.
+        # And then apply the gaussian NLL formula
         nll_loss = rec_loss / torch.exp(self.logvar) + self.logvar
         weighted_nll_loss = nll_loss
-        if weights is not None:
+        if weights is not None: # NOT ENTERING
             weighted_nll_loss = weights*nll_loss
+
+        # Mean of the Nll loss
         weighted_nll_loss = torch.sum(weighted_nll_loss) / weighted_nll_loss.shape[0]
         nll_loss = torch.sum(nll_loss) / nll_loss.shape[0]
+
+        # KL divergence between the approximate posterior 𝑞(𝑧∣𝑥)  and the prior p(z)
         kl_loss = posteriors.kl()
-        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0] # Mean of the KL loss
 
         # now the GAN part
         if optimizer_idx == 0:
@@ -79,6 +107,7 @@ class LPIPSWithDiscriminator(nn.Module):
             else:
                 d_weight = torch.tensor(0.0)
 
+            #returns 0 if currentstep is less then step to start discriminator
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
             loss = weighted_nll_loss + self.kl_weight * kl_loss + d_weight * disc_factor * g_loss
 

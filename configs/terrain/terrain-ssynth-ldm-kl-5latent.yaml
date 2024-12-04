@@ -1,0 +1,101 @@
+model:
+  base_learning_rate: 1.0e-06
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    linear_start: 0.0015
+    linear_end: 0.0205
+    log_every_t: 100
+    timesteps: 1000
+    loss_type: l1
+    first_stage_key: image
+    cond_stage_key: segmentation
+    image_size: 64
+    channels: 5
+    concat_mode: true
+    cond_stage_trainable: true
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 64
+        in_channels: 8 # 5 for the latent representation of the image and 3 for the segmentation
+        out_channels: 5 
+        model_channels: 128
+        attention_resolutions:
+        - 16
+        - 8
+        - 4
+        num_res_blocks: 2
+        channel_mult:
+        - 1
+        - 4
+        - 8
+        num_heads: 8
+
+    first_stage_config:
+      target: ldm.models.autoencoder.AutoencoderKL
+      params:
+        embed_dim: 5
+        ckpt_path: # TODO 5 latent dim AE checkpoint 
+        ddconfig:
+          double_z: true
+          z_channels: 5
+          resolution: 256
+          in_channels: 4
+          out_ch: 4
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+        lossconfig:
+          target: torch.nn.Identity
+
+    cond_stage_config:
+      target: ldm.modules.encoders.modules.SpatialRescaler
+      params:
+        n_stages: 2
+        in_channels: 3 
+        out_channels: 3
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2 #48
+    num_workers: 2
+    wrap: True
+    train:
+      target: ldm.data.terrain.TerrainSegmentationTrain
+      # sampler:
+      #   type: torch.utils.data.WeightedRandomSampler
+      #   weights: weights-v2.json
+      params:
+        size: 256
+        rgba: True
+        augment: True
+    validation:
+      target: ldm.data.terrain.TerrainSegmentationValidation
+      params:
+        size: 256
+        rgba: True
+    test:
+      target: ldm.data.terrain.TerrainSegmentationTest
+      params:
+        size: 256
+        rgba: True
+
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 10000
+        max_images: 8
+        increase_log_steps: False
+        log_first_step: True
+
+  trainer:
+    benchmark: True

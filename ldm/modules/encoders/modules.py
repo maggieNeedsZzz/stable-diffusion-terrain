@@ -7,6 +7,7 @@ from transformers import CLIPTokenizer, CLIPTextModel
 import kornia
 
 from ldm.modules.x_transformer import Encoder, TransformerWrapper  # TODO: can we directly rely on lucidrains code and simply add this as a reuirement? --> test
+import torch.nn.functional as F
 
 
 class AbstractEncoder(nn.Module):
@@ -17,6 +18,70 @@ class AbstractEncoder(nn.Module):
         raise NotImplementedError
 
 
+class ClassOneHot(nn.Module):
+    def __init__(self, n_classes=10, key='class'):
+        super().__init__()
+        self.key = key
+        self.n_classes = n_classes
+
+    def forward(self, batch, key=None):
+        # [int(x) for x in bin(8)[2:]]
+        if key is None:
+            key = self.key
+        # this is for use in crossattn
+        c = batch[key][:, None]
+        one_hot = F.one_hot(c.to(torch.int64), self.n_classes)
+        one_hot = one_hot.to(torch.float)
+        # c = batch[key][:, None]
+        # one_hot = F.one_hot(c, self.n_classes)
+        return one_hot
+
+
+
+class SamplingOneHot(nn.Module):
+    def __init__(self, n_classes=10, key='class', device="cuda"):
+        super().__init__()
+
+    def forward(self, onehot):
+        return onehot
+
+import string
+class ClassOneHotFromCaption(nn.Module):
+    def __init__(self, n_classes=10, key='class', device="cuda"):
+        super().__init__()
+        self.key = key
+        self.device= device
+        self.n_classes = n_classes
+        self.captionTo1hot = {
+            "mountain" : torch.tensor([1,0,0,0,0,0]),
+            "plain"    : torch.tensor([0,1,0,0,0,0]),
+            "hills"    : torch.tensor([0,0,1,0,0,0]),
+            "water"    : torch.tensor([0,0,0,1,0,0]),
+            "river"    : torch.tensor([0,0,0,0,1,0]),
+            "cliff"    : torch.tensor([0,0,0,0,0,1]),
+        }
+
+
+
+    def forward(self, batch, key=None):
+        if key is None:
+            key = self.key
+        
+        batchCaptions = batch[key]
+        one_hot = torch.zeros(len(batchCaptions),6)
+        for i, caption in enumerate(batchCaptions):
+            splitCaption = [word.strip(string.punctuation) for word in caption.split() if word.strip(string.punctuation).isalnum()]
+            for words in splitCaption:
+                one_hot[i] += self.captionTo1hot[words]
+
+        one_hot = one_hot[:, None,:]
+
+        # c = batch[key][:, None]
+        # one_hot = F.one_hot(c.to(torch.int64), self.n_classes)
+        # one_hot = one_hot.to(torch.float)
+
+        
+        return one_hot.to(self.device)
 
 class ClassEmbedder(nn.Module):
     def __init__(self, embed_dim, n_classes=1000, key='class'):
@@ -126,13 +191,28 @@ class SpatialRescaler(nn.Module):
         for stage in range(self.n_stages):
             x = self.interpolator(x, scale_factor=self.multiplier)
 
-
         if self.remap_output:
             x = self.channel_mapper(x)
         return x
 
     def encode(self, x):
         return self(x)
+
+
+class SpatialRescalerNaiveEmbedding(SpatialRescaler):
+    def __init__(self,
+                 n_stages=1,
+                 method='bilinear',
+                 multiplier=0.5,
+                 in_channels=3,
+                 out_channels=None,
+                 bias=False):
+        super().__init__(n_stages, method, multiplier, in_channels, out_channels, bias)
+    def forward(self,x):
+        x = super().forward(x)
+        x = rearrange(x, 'b c h w -> b (h w) c')
+        return x
+    
 
 class FrozenCLIPEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
